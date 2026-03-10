@@ -1,0 +1,352 @@
+"""
+Ref-Video-to-Video API
+
+Workflow per request:
+  1. Extract first frame from uploaded ref_video  (ffmpeg)
+  2. Convert character_images + first_frame to base64 data-URLs
+  3. Call Seedream to generate a pose-matched image
+     ref order: [char_1, char_2, char_3, first_frame]
+  4. Call Parrot /animate with (pose_image + ref_video)
+  5. Return job_id immediately; poll GET /status/{job_id}
+"""
+
+import asyncio
+import base64
+import json
+import logging
+import os
+import subprocess
+import tempfile
+import uuid
+from io import BytesIO
+from typing import List
+
+import httpx
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from PIL import Image as PILImage
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+# ─── Hardcoded credentials ────────────────────────────────────────────────────
+
+PARROT_API_KEY      = "pika_dkc-LaUeI6lsL5MP1aBjgX4ph_7zCi8kKiGhKZ0MMcA"
+PARROT_ANIMATE_URL  = "https://parrot-test.pika.art/api/v1/generate/v0/animate"
+PARROT_POLL_BASE    = "https://parrot-test.pika.art/api/v1/generate/v0"
+
+SEEDREAM_API_KEY = "72021f63-9cd0-427a-9072-af185df35e86"
+SEEDREAM_URL     = "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations"
+SEEDREAM_MODEL   = "seedream-4-5-251128"
+
+# ─── In-memory job store (survives process lifetime only) ─────────────────────
+
+_jobs: dict[str, dict] = {}
+
+# ─── App ──────────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="Ref-Video-to-Video API",
+    description="Upload a reference video + character images → get back an animated video.",
+    version="1.0.0",
+)
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+
+def _extract_first_frame(video_bytes: bytes, ext: str = ".mp4") -> bytes:
+    """Run ffmpeg to pull first frame; return PNG bytes."""
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fv:
+        fv.write(video_bytes)
+        vid_path = fv.name
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as ff:
+        frame_path = ff.name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", vid_path, "-vframes", "1", "-f", "image2", frame_path],
+            check=True, capture_output=True,
+        )
+        with open(frame_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (vid_path, frame_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def _get_duration(video_bytes: bytes, ext: str = ".mp4") -> float:
+    """Return video duration in seconds via ffprobe."""
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fv:
+        fv.write(video_bytes)
+        vid_path = fv.name
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", vid_path],
+            capture_output=True, text=True,
+        )
+        return float(json.loads(out.stdout).get("format", {}).get("duration", 0))
+    except Exception:
+        return 0.0
+    finally:
+        if os.path.exists(vid_path):
+            os.unlink(vid_path)
+
+
+def _duration_suffix(prompt: str, duration: float) -> str:
+    secs = 15 if duration > 10 else (10 if duration > 5 else 5)
+    stripped = prompt.strip()
+    return f"{stripped} --{secs}sec" if stripped else f"--{secs}sec"
+
+
+def _to_jpeg_data_url(image_bytes: bytes) -> str:
+    """Convert any image bytes → JPEG base64 data-URL (strips alpha)."""
+    img = PILImage.open(BytesIO(image_bytes))
+    if img.mode in ("RGBA", "LA", "P"):
+        bg = PILImage.new("RGB", img.size, (255, 255, 255))
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=92, optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/jpeg;base64,{b64}"
+
+
+# ─── API callers ──────────────────────────────────────────────────────────────
+
+async def _call_seedream(
+    prompt: str,
+    data_urls: list[str],
+    width: int,
+    height: int,
+) -> bytes:
+    """Generate pose-matched image with Seedream; return JPEG bytes."""
+    # Seedream OpenAI-compat mode requires >= 3,686,400 px
+    min_px = 3_686_400
+    if width * height < min_px:
+        scale = (min_px / (width * height)) ** 0.5
+        width  = ((int(width  * scale) + 7) // 8) * 8
+        height = ((int(height * scale) + 7) // 8) * 8
+
+    payload: dict = {
+        "model": SEEDREAM_MODEL,
+        "prompt": prompt,
+        "size": f"{width}x{height}",
+        "n": 1,
+        "response_format": "url",
+        "watermark": False,
+        "image": data_urls if len(data_urls) > 1 else data_urls[0],
+    }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        resp = await client.post(
+            SEEDREAM_URL,
+            json=payload,
+            headers={"Authorization": f"Bearer {SEEDREAM_API_KEY}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    image_url = data.get("image_url")
+    if not image_url:
+        items = data.get("data") or []
+        if items and isinstance(items[0], dict):
+            image_url = items[0].get("url") or items[0].get("image_url")
+    if not image_url:
+        raise ValueError(f"Seedream returned no image_url. Response: {data}")
+
+    # Download the generated image
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        dl = await client.get(image_url)
+        dl.raise_for_status()
+        return dl.content
+
+
+async def _submit_animate(image_bytes: bytes, video_bytes: bytes, prompt: str) -> str:
+    """POST to Parrot /animate; return parrot video_id."""
+    files = {
+        "image": ("image.jpg", image_bytes, "image/jpeg"),
+        "video": ("video.mp4", video_bytes, "video/mp4"),
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        resp = await client.post(
+            PARROT_ANIMATE_URL,
+            headers={"X-API-KEY": PARROT_API_KEY},
+            files=files,
+            data={"promptText": prompt, "resolution": "720p"},
+        )
+        resp.raise_for_status()
+        result = resp.json()
+
+    vid_id = result.get("video_id") or result.get("id") or result.get("jobId")
+    if not vid_id:
+        raise ValueError(f"Parrot /animate returned no video_id. Response: {result}")
+    return vid_id
+
+
+async def _poll_until_done(job_id: str, parrot_vid_id: str) -> None:
+    """Background task: poll Parrot every 5 s for up to 10 min."""
+    timeout, elapsed, interval = 600, 0, 5
+    while elapsed < timeout:
+        await asyncio.sleep(interval)
+        elapsed += interval
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+                resp = await client.get(
+                    f"{PARROT_POLL_BASE}/videos/{parrot_vid_id}",
+                    headers={"X-API-KEY": PARROT_API_KEY},
+                )
+                resp.raise_for_status()
+                result = resp.json()
+
+            status = result.get("status", "").lower()
+            video_url = (
+                result.get("video_url")
+                or result.get("videoUrl")
+                or result.get("url")
+            )
+            logger.info("Poll job=%s parrot_status=%s", job_id, status)
+            _jobs[job_id]["parrot_status"] = status
+
+            if status in ("finished", "completed", "done", "success"):
+                _jobs[job_id].update(status="completed", video_url=video_url)
+                return
+            if status in ("failed", "error"):
+                _jobs[job_id].update(
+                    status="failed",
+                    error=result.get("message", "Generation failed"),
+                )
+                return
+        except Exception as exc:
+            logger.warning("Poll error job=%s: %s", job_id, exc)
+
+    _jobs[job_id].update(status="failed", error="Timed out after 10 minutes")
+
+
+# ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.post(
+    "/generate",
+    summary="Start a ref-video-to-video job",
+    response_description="Returns job_id immediately; poll /status/{job_id}",
+)
+async def generate(
+    prompt: str = Form(
+        ...,
+        description="Motion / scene description for the generated video",
+    ),
+    ref_video: UploadFile = File(
+        ...,
+        description="Reference video (MP4 / MOV / WebM)",
+    ),
+    character_images: List[UploadFile] = File(
+        ...,
+        description="Character identity images — 1 to 3 files (JPG / PNG / WebP)",
+    ),
+    aspect_ratio: str = Form(
+        "9:16",
+        description="Output aspect ratio: 9:16 | 16:9 | 1:1",
+    ),
+):
+    """
+    **Full pipeline in one call:**
+
+    1. Extract first frame from `ref_video`
+    2. Generate pose-matched image with Seedream
+       - reference order: `[char_1, char_2?, char_3?, first_frame]`
+    3. Animate the pose image with the ref video via Parrot
+    4. Return `job_id` — poll `GET /status/{job_id}` for result
+    """
+    if not (1 <= len(character_images) <= 3):
+        raise HTTPException(400, "Provide 1 to 3 character_images files")
+
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "processing", "video_url": None, "error": None}
+
+    try:
+        # ── Read uploads ──────────────────────────────────────────────────────
+        video_bytes = await ref_video.read()
+        ext = os.path.splitext(ref_video.filename or "video.mp4")[1] or ".mp4"
+        char_bytes_list = [await img.read() for img in character_images]
+
+        # ── First frame ───────────────────────────────────────────────────────
+        logger.info("job=%s  extracting first frame", job_id)
+        frame_bytes = _extract_first_frame(video_bytes, ext)
+
+        # ── data-URLs: [char_1, …, char_n, first_frame] ───────────────────────
+        char_data_urls   = [_to_jpeg_data_url(b) for b in char_bytes_list]
+        frame_data_url   = _to_jpeg_data_url(frame_bytes)
+        reference_images = char_data_urls + [frame_data_url]
+
+        # ── Seedream prompt ───────────────────────────────────────────────────
+        n = len(char_data_urls)
+        seedream_prompt = (
+            f"[Reference Character] Use the character's face, body shape and "
+            f"appearance from images 1-{n} for identity consistency. "
+            f"[Reference Pose/Composition] Follow the exact pose, camera angle, "
+            f"background and lighting from image {len(reference_images)}. "
+            f"Generate: {prompt}. "
+            f"Keep the character's appearance identical to images 1-{n}."
+        )
+
+        aspect_map = {"9:16": (1024, 1820), "16:9": (1820, 1024), "1:1": (1024, 1024)}
+        pose_w, pose_h = aspect_map.get(aspect_ratio, (1024, 1820))
+
+        logger.info(
+            "job=%s  calling Seedream %dx%d with %d refs",
+            job_id, pose_w, pose_h, len(reference_images),
+        )
+        pose_image_bytes = await _call_seedream(
+            seedream_prompt, reference_images, pose_w, pose_h
+        )
+        logger.info("job=%s  pose image ready (%d bytes)", job_id, len(pose_image_bytes))
+
+        # ── Animate ───────────────────────────────────────────────────────────
+        duration        = _get_duration(video_bytes, ext)
+        animate_prompt  = _duration_suffix(prompt, duration)
+
+        logger.info("job=%s  submitting animate job (prompt=%r)", job_id, animate_prompt)
+        parrot_vid_id = await _submit_animate(pose_image_bytes, video_bytes, animate_prompt)
+        _jobs[job_id]["parrot_video_id"] = parrot_vid_id
+        logger.info("job=%s  parrot_video_id=%s", job_id, parrot_vid_id)
+
+        # ── Background poll ───────────────────────────────────────────────────
+        asyncio.create_task(_poll_until_done(job_id, parrot_vid_id))
+
+        return {"job_id": job_id, "status": "processing"}
+
+    except Exception as exc:
+        logger.error("job=%s  FAILED: %s", job_id, exc)
+        _jobs[job_id].update(status="failed", error=str(exc))
+        raise HTTPException(500, str(exc))
+
+
+@app.get(
+    "/status/{job_id}",
+    summary="Poll job status",
+)
+async def get_status(job_id: str):
+    """
+    Returns current status for a job.
+
+    | status       | meaning                          |
+    |--------------|----------------------------------|
+    | `processing` | Still running                    |
+    | `completed`  | Done — `video_url` is set        |
+    | `failed`     | Error — check `error` field      |
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return {
+        "job_id":    job_id,
+        "status":    job["status"],
+        "video_url": job.get("video_url"),
+        "error":     job.get("error"),
+    }
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    return {"ok": True}
