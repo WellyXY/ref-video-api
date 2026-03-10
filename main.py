@@ -163,7 +163,7 @@ async def _call_seedream(
         return dl.content
 
 
-async def _submit_animate(image_bytes: bytes, video_bytes: bytes, prompt: str) -> str:
+async def _submit_animate(image_bytes: bytes, video_bytes: bytes, prompt: str, resolution: str = "1080p") -> str:
     """POST to Parrot /animate; return parrot video_id."""
     files = {
         "image": ("image.jpg", image_bytes, "image/jpeg"),
@@ -174,7 +174,7 @@ async def _submit_animate(image_bytes: bytes, video_bytes: bytes, prompt: str) -
             PARROT_ANIMATE_URL,
             headers={"X-API-KEY": PARROT_API_KEY},
             files=files,
-            data={"promptText": prompt, "resolution": "720p"},
+            data={"promptText": prompt, "resolution": resolution},
         )
         resp.raise_for_status()
         result = resp.json()
@@ -248,6 +248,10 @@ async def generate(
         "9:16",
         description="Output aspect ratio: 9:16 | 16:9 | 1:1",
     ),
+    resolution: str = Form(
+        "1080p",
+        description="Output resolution: 480p | 720p | 1080p",
+    ),
 ):
     """
     **Full pipeline in one call:**
@@ -306,8 +310,8 @@ async def generate(
         duration        = _get_duration(video_bytes, ext)
         animate_prompt  = _duration_suffix(prompt, duration)
 
-        logger.info("job=%s  submitting animate job (prompt=%r)", job_id, animate_prompt)
-        parrot_vid_id = await _submit_animate(pose_image_bytes, video_bytes, animate_prompt)
+        logger.info("job=%s  submitting animate job (prompt=%r, resolution=%s)", job_id, animate_prompt, resolution)
+        parrot_vid_id = await _submit_animate(pose_image_bytes, video_bytes, animate_prompt, resolution)
         _jobs[job_id]["parrot_video_id"] = parrot_vid_id
         logger.info("job=%s  parrot_video_id=%s", job_id, parrot_vid_id)
 
