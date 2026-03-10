@@ -38,6 +38,9 @@ SEEDREAM_API_KEY = "72021f63-9cd0-427a-9072-af185df35e86"
 SEEDREAM_URL     = "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations"
 SEEDREAM_MODEL   = "seedream-4-5-251128"
 
+TIKHUB_API_KEY   = "i4o6Jco30Wb6oWmWMr7Iyw3fF2edBrg56C7GnkncDcXmiESzOnOPeDjDAQ=="
+TIKHUB_BASE      = "https://api.tikhub.io"
+
 # ─── In-memory job store (survives process lifetime only) ─────────────────────
 
 _jobs: dict[str, dict] = {}
@@ -111,6 +114,93 @@ def _to_jpeg_data_url(image_bytes: bytes) -> str:
     img.save(buf, format="JPEG", quality=92, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/jpeg;base64,{b64}"
+
+
+# ─── TikHub downloader ────────────────────────────────────────────────────────
+
+def _tikhub_headers() -> dict:
+    return {"Authorization": f"Bearer {TIKHUB_API_KEY}"}
+
+
+def _instagram_shortcode(url: str) -> str:
+    """Extract shortcode from Instagram URL."""
+    import re
+    m = re.search(r"/(?:p|reel|reels)/([A-Za-z0-9_-]+)", url)
+    if not m:
+        raise ValueError(f"Cannot extract Instagram shortcode from: {url}")
+    return m.group(1)
+
+
+async def _download_instagram(url: str) -> bytes:
+    """Download Instagram video bytes via TikHub V3 API."""
+    shortcode = _instagram_shortcode(url)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        # Step 1: shortcode → media_id
+        r1 = await client.get(
+            f"{TIKHUB_BASE}/api/v1/instagram/v1/shortcode_to_media_id",
+            params={"shortcode": shortcode},
+            headers=_tikhub_headers(),
+        )
+        r1.raise_for_status()
+        media_id = r1.json()["data"]["media_id"]
+
+        # Step 2: media_id + url → post info
+        r2 = await client.get(
+            f"{TIKHUB_BASE}/api/v1/instagram/v3/get_post_info",
+            params={"media_id": media_id, "url": url},
+            headers=_tikhub_headers(),
+        )
+        r2.raise_for_status()
+        items = r2.json()["data"]["items"]
+        if not items:
+            raise ValueError("TikHub returned no items for Instagram URL")
+
+        video_versions = items[0].get("video_versions") or []
+        if not video_versions:
+            raise ValueError("No video found in Instagram post")
+        video_url = video_versions[0]["url"]
+
+        # Step 3: download video bytes
+        dl = await client.get(video_url)
+        dl.raise_for_status()
+        return dl.content
+
+
+async def _download_tiktok(url: str) -> bytes:
+    """Download TikTok video bytes via TikHub API."""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        r = await client.get(
+            f"{TIKHUB_BASE}/api/v1/tiktok/web/get_video_info",
+            params={"url": url},
+            headers=_tikhub_headers(),
+        )
+        r.raise_for_status()
+        data = r.json().get("data", {})
+
+        # Extract no-watermark video URL
+        video_url = (
+            (data.get("video") or {}).get("play_addr", {}).get("url_list", [None])[0]
+            or (data.get("video") or {}).get("download_addr", {}).get("url_list", [None])[0]
+        )
+        if not video_url:
+            raise ValueError(f"TikHub returned no video URL for TikTok. Response: {data}")
+
+        dl = await client.get(video_url)
+        dl.raise_for_status()
+        return dl.content
+
+
+async def _download_from_social_url(url: str) -> tuple[bytes, str]:
+    """Auto-detect platform and return (video_bytes, ext)."""
+    url_lower = url.lower()
+    if "instagram.com" in url_lower:
+        logger.info("Downloading Instagram video: %s", url)
+        return await _download_instagram(url), ".mp4"
+    elif "tiktok.com" in url_lower:
+        logger.info("Downloading TikTok video: %s", url)
+        return await _download_tiktok(url), ".mp4"
+    else:
+        raise ValueError(f"Unsupported URL platform. Only Instagram and TikTok are supported.")
 
 
 # ─── API callers ──────────────────────────────────────────────────────────────
@@ -237,8 +327,12 @@ async def generate(
         description="Motion / scene description for the generated video",
     ),
     ref_video: UploadFile = File(
-        ...,
-        description="Reference video (MP4 / MOV / WebM)",
+        None,
+        description="Reference video file (MP4 / MOV / WebM). Either this or ref_video_url is required.",
+    ),
+    ref_video_url: str = Form(
+        None,
+        description="Instagram or TikTok URL to use as reference video.",
     ),
     character_images: List[UploadFile] = File(
         ...,
@@ -264,14 +358,19 @@ async def generate(
     """
     if not (1 <= len(character_images) <= 3):
         raise HTTPException(400, "Provide 1 to 3 character_images files")
+    if ref_video is None and not ref_video_url:
+        raise HTTPException(400, "Provide either ref_video file or ref_video_url")
 
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "processing", "video_url": None, "error": None}
 
     try:
         # ── Read uploads ──────────────────────────────────────────────────────
-        video_bytes = await ref_video.read()
-        ext = os.path.splitext(ref_video.filename or "video.mp4")[1] or ".mp4"
+        if ref_video_url:
+            video_bytes, ext = await _download_from_social_url(ref_video_url)
+        else:
+            video_bytes = await ref_video.read()
+            ext = os.path.splitext(ref_video.filename or "video.mp4")[1] or ".mp4"
         char_bytes_list = [await img.read() for img in character_images]
 
         # ── First frame ───────────────────────────────────────────────────────
