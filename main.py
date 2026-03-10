@@ -350,3 +350,16 @@ async def get_status(job_id: str):
 @app.get("/health", include_in_schema=False)
 async def health():
     return {"ok": True}
+
+
+@app.get("/debug", include_in_schema=False)
+async def debug():
+    import shutil
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    path_env = os.environ.get("PATH", "")
+    return {
+        "ffmpeg": ffmpeg_path,
+        "ffprobe": ffprobe_path,
+        "PATH": path_env,
+    }
