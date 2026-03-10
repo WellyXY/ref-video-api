@@ -168,22 +168,27 @@ async def _download_instagram(url: str) -> bytes:
 
 async def _download_tiktok(url: str) -> bytes:
     """Download TikTok video bytes via TikHub API."""
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), follow_redirects=True) as client:
         r = await client.get(
-            f"{TIKHUB_BASE}/api/v1/tiktok/web/get_video_info",
-            params={"url": url},
+            f"{TIKHUB_BASE}/api/v1/tiktok/app/v3/fetch_one_video_by_share_url",
+            params={"share_url": url},
             headers=_tikhub_headers(),
         )
         r.raise_for_status()
-        data = r.json().get("data", {})
+        aweme = r.json()["data"]["aweme_detail"]
+        video = aweme.get("video", {})
 
-        # Extract no-watermark video URL
+        # Prefer no-watermark, fallback to play_addr
+        def _first_url(key: str) -> str | None:
+            return (video.get(key) or {}).get("url_list", [None])[0]
+
         video_url = (
-            (data.get("video") or {}).get("play_addr", {}).get("url_list", [None])[0]
-            or (data.get("video") or {}).get("download_addr", {}).get("url_list", [None])[0]
+            _first_url("download_no_watermark_addr")
+            or _first_url("play_addr")
+            or _first_url("download_addr")
         )
         if not video_url:
-            raise ValueError(f"TikHub returned no video URL for TikTok. Response: {data}")
+            raise ValueError(f"TikHub returned no video URL for TikTok.")
 
         dl = await client.get(video_url)
         dl.raise_for_status()
