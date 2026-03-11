@@ -170,15 +170,24 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
         if r2.status_code == 200:
             item = _extract_item(r2.json().get("data"))
 
-        # Step 2b: fallback to v1 (for image posts or when v3 fails)
+        # Step 2b: fallback — fetch_post_by_url_v2 (different response structure)
         if not item:
             r3 = await client.get(
-                f"{TIKHUB_BASE}/api/v1/instagram/v1/fetch_post_by_url",
+                f"{TIKHUB_BASE}/api/v1/instagram/v1/fetch_post_by_url_v2",
                 params={"post_url": clean_url},
                 headers=_tikhub_headers(),
             )
-            r3.raise_for_status()
-            item = _extract_item(r3.json().get("data"))
+            if r3.status_code == 200:
+                v2_data = (r3.json().get("data") or {}).get("data") or {}
+                medias = v2_data.get("medias") or []
+                if medias:
+                    media = medias[0]
+                    media_url = media.get("link")
+                    is_image = media.get("type") != "video"
+                    if media_url:
+                        dl = await client.get(media_url)
+                        dl.raise_for_status()
+                        return dl.content, is_image
 
         if not item:
             raise ValueError("TikHub could not fetch Instagram post info")
