@@ -144,6 +144,7 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
     Tries v3 API first (best for reels), falls back to v1 for image posts.
     """
     shortcode = _instagram_shortcode(url)
+    clean_url = f"https://www.instagram.com/p/{shortcode}/"  # strip UTM params
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         # Step 1: shortcode → media_id
         r1 = await client.get(
@@ -157,7 +158,7 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
         # Step 2a: try v3 (works well for reels/videos)
         r2 = await client.get(
             f"{TIKHUB_BASE}/api/v1/instagram/v3/get_post_info",
-            params={"media_id": media_id, "url": url},
+            params={"media_id": media_id, "url": clean_url},
             headers=_tikhub_headers(),
         )
         r2.raise_for_status()
@@ -167,7 +168,7 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
         if not item:
             r3 = await client.get(
                 f"{TIKHUB_BASE}/api/v1/instagram/v1/fetch_post_by_url",
-                params={"post_url": url},
+                params={"post_url": clean_url},
                 headers=_tikhub_headers(),
             )
             r3.raise_for_status()
