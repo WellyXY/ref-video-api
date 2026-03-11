@@ -351,6 +351,10 @@ async def generate(
         "1080p",
         description="Output resolution: 480p | 720p | 1080p",
     ),
+    use_seedream: bool = Form(
+        True,
+        description="If true, run Seedream to generate a pose-matched image first. If false, use the first character_image directly as the pose image.",
+    ),
 ):
     """
     **Full pipeline in one call:**
@@ -387,28 +391,33 @@ async def generate(
         frame_data_url   = _to_jpeg_data_url(frame_bytes)
         reference_images = char_data_urls + [frame_data_url]
 
-        # ── Seedream prompt ───────────────────────────────────────────────────
-        n = len(char_data_urls)
-        seedream_prompt = (
-            f"[Reference Character] Use the character's face, body shape and "
-            f"appearance from images 1-{n} for identity consistency. "
-            f"[Reference Pose/Composition] Follow the exact pose, camera angle, "
-            f"background and lighting from image {len(reference_images)}. "
-            f"Generate: {prompt}. "
-            f"Keep the character's appearance identical to images 1-{n}."
-        )
+        # ── Pose image: Seedream or direct ────────────────────────────────────
+        if use_seedream:
+            n = len(char_data_urls)
+            seedream_prompt = (
+                f"[Reference Character] Use the character's face, body shape and "
+                f"appearance from images 1-{n} for identity consistency. "
+                f"[Reference Pose/Composition] Follow the exact pose, camera angle, "
+                f"background and lighting from image {len(reference_images)}. "
+                f"Generate: {prompt}. "
+                f"Keep the character's appearance identical to images 1-{n}."
+            )
 
-        aspect_map = {"9:16": (1024, 1820), "16:9": (1820, 1024), "1:1": (1024, 1024)}
-        pose_w, pose_h = aspect_map.get(aspect_ratio, (1024, 1820))
+            aspect_map = {"9:16": (1024, 1820), "16:9": (1820, 1024), "1:1": (1024, 1024)}
+            pose_w, pose_h = aspect_map.get(aspect_ratio, (1024, 1820))
 
-        logger.info(
-            "job=%s  calling Seedream %dx%d with %d refs",
-            job_id, pose_w, pose_h, len(reference_images),
-        )
-        pose_image_bytes = await _call_seedream(
-            seedream_prompt, reference_images, pose_w, pose_h
-        )
-        logger.info("job=%s  pose image ready (%d bytes)", job_id, len(pose_image_bytes))
+            logger.info(
+                "job=%s  calling Seedream %dx%d with %d refs",
+                job_id, pose_w, pose_h, len(reference_images),
+            )
+            pose_image_bytes = await _call_seedream(
+                seedream_prompt, reference_images, pose_w, pose_h
+            )
+            logger.info("job=%s  pose image ready (%d bytes)", job_id, len(pose_image_bytes))
+        else:
+            # Skip Seedream — use first character image directly
+            pose_image_bytes = char_bytes_list[0]
+            logger.info("job=%s  skipping Seedream, using char_image[0] directly (%d bytes)", job_id, len(pose_image_bytes))
 
         # ── Animate ───────────────────────────────────────────────────────────
         duration        = _get_duration(video_bytes, ext)
