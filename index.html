@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saka Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+        .container { display: flex; min-height: 100vh; }
+        .sidebar {
+            width: 260px;
+            background: rgba(255,255,255,0.05);
+            padding: 20px;
+            border-right: 1px solid rgba(255,255,255,0.1);
+        }
+        .profile {
+            text-align: center;
+            padding: 20px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 20px;
+        }
+        .profile img {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            border: 3px solid #ff6b9d;
+            margin-bottom: 10px;
+        }
+        .profile h2 { font-size: 18px; margin-bottom: 5px; }
+        .profile p { color: #888; font-size: 14px; }
+        .verified { color: #3897f0; margin-left: 5px; }
+        .nav a {
+            display: block;
+            padding: 12px 15px;
+            color: #aaa;
+            text-decoration: none;
+            border-radius: 8px;
+            margin-bottom: 5px;
+            transition: all 0.3s;
+        }
+        .nav a:hover, .nav a.active {
+            background: linear-gradient(90deg, #ff6b9d, #c44569);
+            color: #fff;
+        }
+        .main { flex: 1; padding: 30px; overflow-y: auto; }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+        .header h1 { font-size: 28px; }
+        .header span { color: #888; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
+        .stat-card {
+            background: linear-gradient(135deg, rgba(255,107,157,0.2), rgba(196,69,105,0.2));
+            border: 1px solid rgba(255,107,157,0.3);
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+        }
+        .stat-card h3 { font-size: 32px; margin-bottom: 5px; color: #ff6b9d; }
+        .stat-card p { color: #aaa; font-size: 14px; }
+        .section-title {
+            font-size: 20px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #ff6b9d;
+            display: inline-block;
+        }
+        .posts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .post-card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            overflow: hidden;
+            transition: transform 0.3s;
+        }
+        .post-card:hover { transform: translateY(-5px); }
+        .post-card img {
+            width: 100%;
+            height: 280px;
+            object-fit: cover;
+            cursor: pointer;
+        }
+        .post-info { padding: 15px; }
+        .post-info .engagement {
+            display: flex;
+            gap: 15px;
+            color: #aaa;
+            font-size: 14px;
+        }
+        .post-info .engagement span { display: flex; align-items: center; gap: 5px; }
+        .post-info .caption {
+            margin-top: 10px;
+            font-size: 13px;
+            color: #ccc;
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal.active { display: flex; }
+        .modal img { max-width: 90%; max-height: 90%; border-radius: 10px; }
+        .modal-close {
+            position: absolute;
+            top: 20px; right: 30px;
+            font-size: 40px;
+            color: #fff;
+            cursor: pointer;
+        }
+        @media (max-width: 768px) {
+            .container { flex-direction: column; }
+            .sidebar { width: 100%; }
+            .stats { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <aside class="sidebar">
+            <div class="profile">
+                <img src="https://scontent-sjc3-1.cdninstagram.com/v/t51.2885-19/463364891_873979738199633_1941036661228268385_n.jpg?stp=dst-jpg_s150x150_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby44MjMuYzIifQ&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=1&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=yKg1IO6yUNkQ7kNvwF1NZdB&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Afyi-5-55U5XPT0ebhBgJ3nQnMdZW7Scg9jk3mgLMSXieQ&oe=69B6E382&_nc_sid=8b3546" alt="Saka">
+                <h2>Bukayo Saka <span class="verified">✓</span></h2>
+                <p>@bukayosaka87</p>
+            </div>
+            <nav class="nav">
+                <a href="#" class="active">📊 Overview</a>
+                <a href="#">📸 Instagram Posts</a>
+                <a href="#">📈 Engagement</a>
+            </nav>
+        </aside>
+
+        <main class="main">
+            <div class="header">
+                <h1>Saka Dashboard</h1>
+                <span>Updated: Mar 11, 2026</span>
+            </div>
+
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>7.7M</h3>
+                    <p>Followers</p>
+                </div>
+                <div class="stat-card">
+                    <h3>495</h3>
+                    <p>Following</p>
+                </div>
+                <div class="stat-card">
+                    <h3>407</h3>
+                    <p>Posts</p>
+                </div>
+                <div class="stat-card">
+                    <h3>548K</h3>
+                    <p>Avg. Engagement</p>
+                </div>
+            </div>
+
+            <h2 class="section-title">Recent Posts</h2>
+            <div class="posts-grid" id="posts-container"></div>
+        </main>
+    </div>
+
+    <div class="modal" id="modal">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <img src="" alt="" id="modal-img">
+    </div>
+
+    <script>
+        const posts = [
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/641760973_18577695850024198_1090731519968590982_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=110&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=y-xU0uL8jZ8Q7kNvwEYwDPw&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Afzprgvtek16OhfwR39__LZw2n2indAQYMGna1oU03pe-w&oe=69B6DB2B&_nc_sid=8b3546", caption: "Introducing The Link-Up: a Bukayo Saka show 🤩 Stream Episode I now on The Arsenal 📱", likes: 485000, comments: 3200 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/645736563_18574603549055415_2367888134334114256_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=jIJVYuIN55oQ7kNvwF-MtSH&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Afwhtrd6ynH1CfIar00LmDyDfR8E4se7m8irLNtQygN6Xg&oe=69B6FA9B&_nc_sid=8b3546", caption: "Match day vibes ⚽", likes: 520000, comments: 2800 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/645847344_18574513231055415_6392610182419917267_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=yV4NTn1ov_gQ7kNvwFmmXSw&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Afx0Dj-AVd3dFzxrp4MFL_TUvOctxjZsSFFsG22ULutScw&oe=69B6FA0F&_nc_sid=8b3546", caption: "300 appearances for Arsenal! 🔴⚪", likes: 890000, comments: 8500 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/641888180_18577548382024198_3531377516111632251_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=110&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=mVtUdakm-JAQ7kNvwHTw-aC&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfxI8j_Sd8XMxe2yQWK6D-csPZGHjP4_2mK-zwvUUHR_6w&oe=69B6ED5E&_nc_sid=8b3546", caption: "Brighton 0-3 Arsenal ⚽⚽⚽", likes: 650000, comments: 4200 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/646050630_18573874351055415_2656111303888268753_n.jpg?stp=dst-jpg_e35_s640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=kRV2uZVmpYgQ7kNvwEuP7Nz&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfyOVb9RxzEcjgQ4W7RCpZAec7UKDlgewbDKcHyjcmLBDA&oe=69B6EE19&_nc_sid=8b3546", caption: "Emirates Stadium 🏟️", likes: 420000, comments: 1900 },
+            { image: "https://scontent-sjc6-1.cdninstagram.com/v/t51.82787-15/643208590_18566885860043440_1558999844516825613_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc6-1.cdninstagram.com&_nc_cat=104&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=7lWI4acysqQQ7kNvwGlGR3B&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfysoXJkKbSNfHPkm6ILIbnNZbIhUqm-Szl2C8_xXPEdyg&oe=69B6FDB7&_nc_sid=8b3546", caption: "Him. Again. 🔥", likes: 780000, comments: 5600 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/641638484_18572328481055415_683693243554710222_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=Pmk47Ojy0LUQ7kNvwELjPRw&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Afw_XsmzUimarH-3bX5vtZIMX1VM0LBlaClPQ6ORVgMwGQ&oe=69B70135&_nc_sid=8b3546", caption: "VISIT RWANDA 🇷🇼", likes: 390000, comments: 1500 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/639496400_18568962451055415_6026802994358013774_n.jpg?stp=dst-jpg_e35_s640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=tACb4pf6dEAQ7kNvwHqliB2&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfxrUk4ycQ-VZxaFY56LOOa7ismyqSfGKNAqCadhe0xqtg&oe=69B701EA&_nc_sid=8b3546", caption: "Training at Sobha Realty Centre 💪", likes: 350000, comments: 1200 },
+            { image: "https://scontent-sjc6-1.cdninstagram.com/v/t51.71878-15/636048170_4408692826078233_4358074103097454859_n.jpg?stp=dst-jpg_e15_tt6&_nc_ht=scontent-sjc6-1.cdninstagram.com&_nc_cat=109&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=vQmWhLDwEzIQ7kNvwH6f267&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfwKNQvbeYZXTWGt3aNTWi2anT_e1n8d0QyUnu7ccD-A5w&oe=69B6E302&_nc_sid=8b3546", caption: "Bukayo is one of us! New contract signed with The Arsenal 🙌", likes: 1250000, comments: 15000 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/623387018_18563371924024198_5695257484010351510_n.jpg?stp=dst-jpg_e15_p640x640_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=110&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=CTVj_ppITHIQ7kNvwFIIFn0&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfxjQyNlkRiz9bVGeXMDXKYItEjgDT-GXR9ueDuXfu0_ug&oe=69B6FED6&_nc_sid=8b3546", caption: "One game. One screen. One feeling of greatness. TCL × Arsenal 🤝", likes: 280000, comments: 980 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/621548936_18559458886055415_5861067575093216505_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=vnZr_rlmyp0Q7kNvwGfKgJM&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfxTAn8G5PpFdBUd05msXFPOEAO93EZc55h94GPKmr7-bA&oe=69B6D4D2&_nc_sid=8b3546", caption: "Winter vibes ❄️", likes: 410000, comments: 2100 },
+            { image: "https://scontent-sjc3-1.cdninstagram.com/v/t51.82787-15/619900335_18558975496055415_5459882337814172210_n.jpg?stp=dst-jpg_e35_p640x640_sh0.08_tt6&_nc_ht=scontent-sjc3-1.cdninstagram.com&_nc_cat=103&_nc_oc=Q6cZ2QEJpilIh2qIGXpp5dhiE0HZ04pUsf4PezjFh9YxepCD_ZPyA9fZNDvdruQeOPU4KVk&_nc_ohc=5E1iUVRB28cQ7kNvwGLVlWS&_nc_gid=H7cWXzfuyt0MyxgXbZp4_g&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_AfyYOQKrzoEw1LPz1Gww9nbwTZEzfTznYYX7U7WXIDhQ9Q&oe=69B6D4D4&_nc_sid=8b3546", caption: "NO TO RACISM ✊", likes: 560000, comments: 3800 }
+        ];
+
+        function formatNumber(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
+        }
+
+        function renderPosts() {
+            const container = document.getElementById('posts-container');
+            container.innerHTML = posts.map(post => `
+                <div class="post-card">
+                    <img src="${post.image}" alt="Post" onclick="openModal('${post.image}')" onerror="this.src='https://via.placeholder.com/640x640?text=Image+Not+Available'">
+                    <div class="post-info">
+                        <div class="engagement">
+                            <span>❤️ ${formatNumber(post.likes)}</span>
+                            <span>💬 ${formatNumber(post.comments)}</span>
+                        </div>
+                        <p class="caption">${post.caption}</p>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function openModal(src) {
+            document.getElementById('modal-img').src = src;
+            document.getElementById('modal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.remove('active');
+        }
+
+        document.getElementById('modal').addEventListener('click', (e) => {
+            if (e.target.id === 'modal') closeModal();
+        });
+
+        renderPosts();
+    </script>
+</body>
+</html>
