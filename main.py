@@ -143,8 +143,13 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
     """Download Instagram media. Returns (bytes, is_image).
     Tries v3 API first (best for reels), falls back to v1 for image posts.
     """
+    import re as _re
     shortcode = _instagram_shortcode(url)
-    clean_url = f"https://www.instagram.com/p/{shortcode}/"  # strip UTM params
+    # Preserve original path type (reel/reels/p) but strip query params
+    path_match = _re.search(r"/(p|reel|reels)/[A-Za-z0-9_-]+", url)
+    path_type = path_match.group(1) if path_match else "p"
+    clean_url = f"https://www.instagram.com/{path_type}/{shortcode}/"
+
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         # Step 1: shortcode → media_id
         r1 = await client.get(
@@ -156,15 +161,16 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
         media_id = r1.json()["data"]["media_id"]
 
         # Step 2a: try v3 (works well for reels/videos)
+        item = None
         r2 = await client.get(
             f"{TIKHUB_BASE}/api/v1/instagram/v3/get_post_info",
             params={"media_id": media_id, "url": clean_url},
             headers=_tikhub_headers(),
         )
-        r2.raise_for_status()
-        item = _extract_item(r2.json().get("data"))
+        if r2.status_code == 200:
+            item = _extract_item(r2.json().get("data"))
 
-        # Step 2b: fallback to v1 for image posts (v3 returns null data)
+        # Step 2b: fallback to v1 (for image posts or when v3 fails)
         if not item:
             r3 = await client.get(
                 f"{TIKHUB_BASE}/api/v1/instagram/v1/fetch_post_by_url",
