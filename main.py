@@ -131,11 +131,10 @@ def _instagram_shortcode(url: str) -> str:
     return m.group(1)
 
 
-async def _download_instagram(url: str) -> bytes:
-    """Download Instagram video bytes via TikHub V3 API."""
+async def _download_instagram(url: str) -> tuple[bytes, bool]:
+    """Download Instagram media. Returns (bytes, is_image)."""
     shortcode = _instagram_shortcode(url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        # Step 1: shortcode → media_id
         r1 = await client.get(
             f"{TIKHUB_BASE}/api/v1/instagram/v1/shortcode_to_media_id",
             params={"shortcode": shortcode},
@@ -144,7 +143,6 @@ async def _download_instagram(url: str) -> bytes:
         r1.raise_for_status()
         media_id = r1.json()["data"]["media_id"]
 
-        # Step 2: media_id + url → post info
         r2 = await client.get(
             f"{TIKHUB_BASE}/api/v1/instagram/v3/get_post_info",
             params={"media_id": media_id, "url": url},
@@ -155,15 +153,22 @@ async def _download_instagram(url: str) -> bytes:
         if not items:
             raise ValueError("TikHub returned no items for Instagram URL")
 
-        video_versions = items[0].get("video_versions") or []
-        if not video_versions:
-            raise ValueError("No video found in Instagram post")
-        video_url = video_versions[0]["url"]
+        item = items[0]
+        video_versions = item.get("video_versions") or []
 
-        # Step 3: download video bytes
-        dl = await client.get(video_url)
+        if video_versions:
+            media_url = video_versions[0]["url"]
+            is_image = False
+        else:
+            candidates = (item.get("image_versions2") or {}).get("candidates") or []
+            if not candidates:
+                raise ValueError("No media found in Instagram post")
+            media_url = candidates[0]["url"]
+            is_image = True
+
+        dl = await client.get(media_url)
         dl.raise_for_status()
-        return dl.content
+        return dl.content, is_image
 
 
 async def _download_tiktok(url: str) -> bytes:
@@ -195,17 +200,28 @@ async def _download_tiktok(url: str) -> bytes:
         return dl.content
 
 
-async def _download_from_social_url(url: str) -> tuple[bytes, str]:
-    """Auto-detect platform and return (video_bytes, ext)."""
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp"}
+
+
+def _detect_is_image(filename: str, content_type: str = "") -> bool:
+    ext = os.path.splitext(filename or "")[1].lower()
+    return ext in _IMAGE_EXTS or content_type.lower() in _IMAGE_CONTENT_TYPES
+
+
+async def _download_from_social_url(url: str) -> tuple[bytes, str, bool]:
+    """Auto-detect platform and return (bytes, ext, is_image)."""
     url_lower = url.lower()
     if "instagram.com" in url_lower:
-        logger.info("Downloading Instagram video: %s", url)
-        return await _download_instagram(url), ".mp4"
+        logger.info("Downloading Instagram media: %s", url)
+        content, is_image = await _download_instagram(url)
+        ext = ".jpg" if is_image else ".mp4"
+        return content, ext, is_image
     elif "tiktok.com" in url_lower:
         logger.info("Downloading TikTok video: %s", url)
-        return await _download_tiktok(url), ".mp4"
+        return await _download_tiktok(url), ".mp4", False
     else:
-        raise ValueError(f"Unsupported URL platform. Only Instagram and TikTok are supported.")
+        raise ValueError("Unsupported URL platform. Only Instagram and TikTok are supported.")
 
 
 # ─── API callers ──────────────────────────────────────────────────────────────
@@ -255,7 +271,7 @@ async def _call_seedream(
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         dl = await client.get(image_url)
         dl.raise_for_status()
-        return dl.content
+        return dl.content, image_url
 
 
 async def _submit_animate(image_bytes: bytes, video_bytes: bytes, prompt: str, resolution: str = "1080p") -> str:
@@ -371,29 +387,55 @@ async def generate(
         raise HTTPException(400, "Provide either ref_video file or ref_video_url")
 
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "processing", "video_url": None, "error": None}
+    _jobs[job_id] = {"status": "processing", "video_url": None, "image_url": None, "error": None}
 
     try:
         # ── Read uploads ──────────────────────────────────────────────────────
         if ref_video_url:
-            video_bytes, ext = await _download_from_social_url(ref_video_url)
+            ref_bytes, ext, is_image = await _download_from_social_url(ref_video_url)
         else:
-            video_bytes = await ref_video.read()
+            ref_bytes = await ref_video.read()
             ext = os.path.splitext(ref_video.filename or "video.mp4")[1] or ".mp4"
+            is_image = _detect_is_image(ref_video.filename or "", ref_video.content_type or "")
         char_bytes_list = [await img.read() for img in character_images]
+
+        char_data_urls = [_to_jpeg_data_url(b) for b in char_bytes_list]
+        aspect_map = {"9:16": (1024, 1820), "16:9": (1820, 1024), "1:1": (1024, 1024)}
+        pose_w, pose_h = aspect_map.get(aspect_ratio, (1024, 1820))
+        n = len(char_data_urls)
+
+        # ── Image i2i mode ────────────────────────────────────────────────────
+        if is_image:
+            logger.info("job=%s  image input detected — running Seedream i2i only", job_id)
+            ref_data_url = _to_jpeg_data_url(ref_bytes)
+            reference_images = char_data_urls + [ref_data_url]
+            seedream_prompt = (
+                f"[Reference Character] Use the character's face, body shape and "
+                f"appearance from images 1-{n} for identity consistency. "
+                f"[Reference Composition] Follow the exact composition, angle, "
+                f"background and lighting from image {len(reference_images)}. "
+                f"Generate: {prompt}. "
+                f"Keep the character's appearance identical to images 1-{n}."
+            )
+            logger.info("job=%s  calling Seedream i2i %dx%d", job_id, pose_w, pose_h)
+            _, generated_image_url = await _call_seedream(seedream_prompt, reference_images, pose_w, pose_h)
+            logger.info("job=%s  Seedream i2i done: %s", job_id, generated_image_url)
+            _jobs[job_id].update(status="completed", image_url=generated_image_url)
+            return {"job_id": job_id, "status": "completed", "image_url": generated_image_url}
+
+        # ── Video pipeline ────────────────────────────────────────────────────
+        video_bytes = ref_bytes
 
         # ── First frame ───────────────────────────────────────────────────────
         logger.info("job=%s  extracting first frame", job_id)
         frame_bytes = _extract_first_frame(video_bytes, ext)
 
         # ── data-URLs: [char_1, …, char_n, first_frame] ───────────────────────
-        char_data_urls   = [_to_jpeg_data_url(b) for b in char_bytes_list]
         frame_data_url   = _to_jpeg_data_url(frame_bytes)
         reference_images = char_data_urls + [frame_data_url]
 
         # ── Pose image: Seedream or direct ────────────────────────────────────
         if use_seedream:
-            n = len(char_data_urls)
             seedream_prompt = (
                 f"[Reference Character] Use the character's face, body shape and "
                 f"appearance from images 1-{n} for identity consistency. "
@@ -402,35 +444,23 @@ async def generate(
                 f"Generate: {prompt}. "
                 f"Keep the character's appearance identical to images 1-{n}."
             )
-
-            aspect_map = {"9:16": (1024, 1820), "16:9": (1820, 1024), "1:1": (1024, 1024)}
-            pose_w, pose_h = aspect_map.get(aspect_ratio, (1024, 1820))
-
-            logger.info(
-                "job=%s  calling Seedream %dx%d with %d refs",
-                job_id, pose_w, pose_h, len(reference_images),
-            )
-            pose_image_bytes = await _call_seedream(
-                seedream_prompt, reference_images, pose_w, pose_h
-            )
+            logger.info("job=%s  calling Seedream %dx%d with %d refs", job_id, pose_w, pose_h, len(reference_images))
+            pose_image_bytes, _ = await _call_seedream(seedream_prompt, reference_images, pose_w, pose_h)
             logger.info("job=%s  pose image ready (%d bytes)", job_id, len(pose_image_bytes))
         else:
-            # Skip Seedream — use first character image directly
             pose_image_bytes = char_bytes_list[0]
-            logger.info("job=%s  skipping Seedream, using char_image[0] directly (%d bytes)", job_id, len(pose_image_bytes))
+            logger.info("job=%s  skipping Seedream, using char_image[0] directly", job_id)
 
         # ── Animate ───────────────────────────────────────────────────────────
-        duration        = _get_duration(video_bytes, ext)
-        animate_prompt  = _duration_suffix(prompt, duration)
+        duration       = _get_duration(video_bytes, ext)
+        animate_prompt = _duration_suffix(prompt, duration)
 
         logger.info("job=%s  submitting animate job (prompt=%r, resolution=%s)", job_id, animate_prompt, resolution)
         parrot_vid_id = await _submit_animate(pose_image_bytes, video_bytes, animate_prompt, resolution)
         _jobs[job_id]["parrot_video_id"] = parrot_vid_id
         logger.info("job=%s  parrot_video_id=%s", job_id, parrot_vid_id)
 
-        # ── Background poll ───────────────────────────────────────────────────
         asyncio.create_task(_poll_until_done(job_id, parrot_vid_id))
-
         return {"job_id": job_id, "status": "processing"}
 
     except Exception as exc:
@@ -460,6 +490,7 @@ async def get_status(job_id: str):
         "job_id":    job_id,
         "status":    job["status"],
         "video_url": job.get("video_url"),
+        "image_url": job.get("image_url"),
         "error":     job.get("error"),
     }
 
