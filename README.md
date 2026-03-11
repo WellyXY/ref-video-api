@@ -8,9 +8,18 @@ Upload a reference video (or paste an Instagram/TikTok URL) + character images �
 
 ## Workflow
 
-**With Seedream (default):**
+**Image input (auto-detected):**
 ```
-ref_video (file or URL) + character_images + prompt
+ref image (file or Instagram image URL) + character_images + prompt
+        ↓
+Seedream i2i: [char1, char2?, char3?, ref_image] → generated image
+        ↓
+Return immediately: { status: "completed", image_url: "..." }
+```
+
+**Video input — With Seedream (default):**
+```
+ref_video (file or video URL) + character_images + prompt
         ↓
 Extract first frame (ffmpeg)
         ↓
@@ -21,9 +30,9 @@ Parrot /animate: pose_image + ref_video → video
 Poll until done
 ```
 
-**Without Seedream (`use_seedream=false`):**
+**Video input — Without Seedream (`use_seedream=false`):**
 ```
-ref_video (file or URL) + character_images[0] + prompt
+ref_video (file or video URL) + character_images[0] + prompt
         ↓
 Parrot /animate: char_image[0] + ref_video → video
         ↓
@@ -42,13 +51,14 @@ Poll until done
 |--------------------|--------|----------|-------------|
 | `prompt`           | string | ✅        | Motion / scene description |
 | `character_images` | file[] | ✅        | 1–3 character identity images (JPG / PNG / WebP) |
-| `ref_video`        | file   | ※ either | Reference video file (MP4 / MOV / WebM) |
-| `ref_video_url`    | string | ※ either | Instagram or TikTok URL |
+| `ref_video`        | file   | ※ either | Reference video **or image** file (MP4 / MOV / WebM / JPG / PNG / WebP) |
+| `ref_video_url`    | string | ※ either | Instagram (video or image post) or TikTok URL |
 | `aspect_ratio`     | string | —        | `9:16` \| `16:9` \| `1:1` (default `9:16`) |
-| `resolution`       | string | —        | `480p` \| `720p` \| `1080p` (default `1080p`) |
-| `use_seedream`     | bool   | —        | `true` = run Seedream pose generation (default). `false` = skip Seedream, use first character image directly. |
+| `resolution`       | string | —        | `480p` \| `720p` \| `1080p` (default `1080p`, video mode only) |
+| `use_seedream`     | bool   | —        | `true` = Seedream pose generation (default). `false` = skip Seedream. Video mode only. |
 
 > `ref_video` and `ref_video_url` are mutually exclusive — provide exactly one.
+> If input is an image, the API **automatically** runs Seedream i2i only and returns `image_url` directly.
 
 **Response:**
 ```json
@@ -99,6 +109,15 @@ curl -X POST https://web-production-de9ee.up.railway.app/generate \
   -F "ref_video_url=https://www.tiktok.com/@user/video/7615693631818566935" \
   -F "character_images=@./char1.jpg"
 ```
+
+**Use an Instagram image post:**
+```bash
+curl -X POST https://web-production-de9ee.up.railway.app/generate \
+  -F "prompt=A woman in elegant dress" \
+  -F "ref_video_url=https://www.instagram.com/p/SHORTCODE/" \
+  -F "character_images=@./char1.jpg"
+```
+Returns immediately: `{ "status": "completed", "image_url": "https://..." }`
 
 **Skip Seedream (direct mode):**
 ```bash

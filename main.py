@@ -131,10 +131,21 @@ def _instagram_shortcode(url: str) -> str:
     return m.group(1)
 
 
+def _extract_item(data: dict) -> dict | None:
+    """Extract first item from TikHub Instagram response data."""
+    if not data:
+        return None
+    items = data.get("items") or []
+    return items[0] if items else None
+
+
 async def _download_instagram(url: str) -> tuple[bytes, bool]:
-    """Download Instagram media. Returns (bytes, is_image)."""
+    """Download Instagram media. Returns (bytes, is_image).
+    Tries v3 API first (best for reels), falls back to v1 for image posts.
+    """
     shortcode = _instagram_shortcode(url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        # Step 1: shortcode → media_id
         r1 = await client.get(
             f"{TIKHUB_BASE}/api/v1/instagram/v1/shortcode_to_media_id",
             params={"shortcode": shortcode},
@@ -143,19 +154,29 @@ async def _download_instagram(url: str) -> tuple[bytes, bool]:
         r1.raise_for_status()
         media_id = r1.json()["data"]["media_id"]
 
+        # Step 2a: try v3 (works well for reels/videos)
         r2 = await client.get(
             f"{TIKHUB_BASE}/api/v1/instagram/v3/get_post_info",
             params={"media_id": media_id, "url": url},
             headers=_tikhub_headers(),
         )
         r2.raise_for_status()
-        items = r2.json()["data"]["items"]
-        if not items:
-            raise ValueError("TikHub returned no items for Instagram URL")
+        item = _extract_item(r2.json().get("data"))
 
-        item = items[0]
+        # Step 2b: fallback to v1 for image posts (v3 returns null data)
+        if not item:
+            r3 = await client.get(
+                f"{TIKHUB_BASE}/api/v1/instagram/v1/fetch_post_by_url",
+                params={"post_url": url},
+                headers=_tikhub_headers(),
+            )
+            r3.raise_for_status()
+            item = _extract_item(r3.json().get("data"))
+
+        if not item:
+            raise ValueError("TikHub could not fetch Instagram post info")
+
         video_versions = item.get("video_versions") or []
-
         if video_versions:
             media_url = video_versions[0]["url"]
             is_image = False
