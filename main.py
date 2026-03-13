@@ -41,6 +41,11 @@ SEEDREAM_MODEL   = "seedream-4-5-251128"
 TIKHUB_API_KEY   = "i4o6Jco30Wb6oWmWMr7Iyw3fF2edBrg56C7GnkncDcXmiESzOnOPeDjDAQ=="
 TIKHUB_BASE      = "https://api.tikhub.io"
 
+# Grok / xAI (prompt rewriting) — set via Railway env vars
+XAI_API_KEY      = os.environ.get("XAI_API_KEY", "")
+XAI_BASE_URL     = "https://api.x.ai/v1"
+XAI_VISION_MODEL = os.environ.get("XAI_VISION_MODEL", "grok-4-1-fast-non-reasoning")
+
 # ─── In-memory job store (survives process lifetime only) ─────────────────────
 
 _jobs: dict[str, dict] = {}
@@ -261,6 +266,146 @@ async def _download_from_social_url(url: str) -> tuple[bytes, str, bool]:
         raise ValueError("Unsupported URL platform. Only Instagram and TikTok are supported.")
 
 
+# ─── Grok prompt rewriting ─────────────────────────────────────────────────────
+
+SEEDREAM_PROMPT_GUIDE = """You are a professional AI image generation prompt optimization expert for the Seedream 4.5 model.
+
+## Seedream Prompt Best Practices:
+
+1. **Subject Description**: Clearly describe appearance. NEVER explicitly describe hairstyle — write "maintaining the character's exact hairstyle from images 1-3 only, do NOT copy hairstyle from the reference image". Expression is REQUIRED: copy exactly from the reference image if provided.
+
+2. **Clothing Details**: When a reference image is provided, describe clothing/nudity state EXACTLY as seen. Never substitute with generic defaults. If nude/partially nude, state explicitly.
+
+3. **Scene Setting**: Describe environment, background, lighting, time of day, atmosphere.
+
+4. **Photography Style**: Camera angle, lighting type, quality descriptors (high quality, 4K, photorealistic).
+
+## Multiple Reference Images Guide:
+- Base images (first few) → maintain consistent facial features and body proportions
+- Reference image (last one) → reference pose/composition/atmosphere/lighting
+
+**Format**:
+[Reference Character] Based on the character's face and body from base reference images (images 1-N),
+[Reference Pose/Composition/Style] following the pose/composition/atmosphere from the reference image (last image),
+generate [subject], maintaining hairstyle from base images only, wearing [clothing from reference image], in [scene]...
+
+## Face Consistency (CRITICAL):
+- Face MUST remain identical to base reference images
+- Always include: sharp focus on face, clear facial details, well-defined facial features
+- Never let background/clothing/pose changes alter the face
+
+## Important:
+- NEVER use character names in the prompt
+- Do not mention age or birth year
+- Default to neutral/natural lighting unless otherwise specified
+- Output ONLY the optimized prompt, no explanations
+
+## Negative Prompt (always append):
+no warm amber glow, no cinematic lighting, no moody atmosphere, no golden hour tone, no posed expression, no heavy makeup, no studio lighting, no stiff posing, no over-sharpened pores, no waxy skin
+"""
+
+
+async def _rewrite_seedream_prompt(
+    ref_image_bytes: bytes,
+    num_character_images: int,
+    total_ref_images: int,
+    user_prompt: str = "",
+) -> str:
+    """Use Grok Vision to analyze the reference image and generate an optimized Seedream prompt.
+
+    Falls back to a hardcoded template if XAI_API_KEY is not set or the API call fails.
+    """
+    n = num_character_images
+    last = total_ref_images
+
+    # Fallback template (used when Grok is unavailable)
+    def _fallback() -> str:
+        base = user_prompt.strip() if user_prompt.strip() else "high quality, 4K, professional photography"
+        return (
+            f"[Reference Character] Based on the character's face and body from base reference images "
+            f"(images 1-{n}), maintaining exact facial features, face unchanged, sharp and clear face, "
+            f"well-defined facial features, maintaining the character's exact hairstyle from images 1-{n} only "
+            f"— do NOT copy hairstyle from image {last}, "
+            f"[Reference Pose/Composition/Style] following the exact pose, body position, camera angle, "
+            f"background environment, and lighting from image {last}, "
+            f"generate a character wearing the exact clothing/outfit as shown in image {last}. "
+            f"{base}. "
+            f"Photorealistic quality, sharp focus on face, precise facial clarity."
+        )
+
+    if not XAI_API_KEY:
+        logger.warning("XAI_API_KEY not set — skipping Grok rewrite, using fallback template")
+        return _fallback()
+
+    ref_data_url = _to_jpeg_data_url(ref_image_bytes)
+
+    if user_prompt.strip():
+        user_msg_text = (
+            f"Analyze the attached reference image (pose, composition, clothing/nudity state, lighting, "
+            f"background, atmosphere) and generate an optimized Seedream prompt.\n\n"
+            f"User wants: {user_prompt.strip()}\n\n"
+            f"Image order: images 1-{n} = character base images, image {last} = this reference image.\n"
+            f"Use images 1-{n} for character identity (face, body). Use image {last} for pose/composition/clothing.\n"
+            f"Hair MUST come from images 1-{n} only — explicitly state 'do NOT copy hairstyle from image {last}'.\n"
+            f"Clothing/nudity: describe EXACTLY what is visible in this reference image.\n"
+            f"Expression: copy exactly from this reference image.\n\n"
+            f"Output ONLY the optimized prompt."
+        )
+    else:
+        user_msg_text = (
+            f"Analyze the attached reference image in detail (pose, composition, clothing/nudity state, "
+            f"lighting, background, camera angle, atmosphere, expression) and generate an optimized "
+            f"Seedream prompt based purely on what you observe.\n\n"
+            f"Image order: images 1-{n} = character base images, image {last} = this reference image.\n"
+            f"Use images 1-{n} for character identity (face, body). Use image {last} for pose/composition/clothing.\n"
+            f"Hair MUST come from images 1-{n} only — explicitly state 'do NOT copy hairstyle from image {last}'.\n"
+            f"Clothing/nudity: describe EXACTLY what is visible in this reference image.\n"
+            f"Expression: copy exactly from this reference image.\n\n"
+            f"Output ONLY the optimized prompt."
+        )
+
+    payload = {
+        "model": XAI_VISION_MODEL,
+        "messages": [
+            {"role": "system", "content": SEEDREAM_PROMPT_GUIDE},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_msg_text},
+                    {"type": "image_url", "image_url": {"url": ref_data_url}},
+                ],
+            },
+        ],
+        "max_tokens": 500,
+        "temperature": 0.7,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            resp = await client.post(
+                f"{XAI_BASE_URL}/chat/completions",
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {XAI_API_KEY}",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not content or len(content) < 20:
+            logger.warning("Grok returned empty/short response, using fallback")
+            return _fallback()
+
+        logger.info("Grok rewrite succeeded: %d chars", len(content))
+        return content.strip()
+
+    except Exception as exc:
+        logger.error("Grok rewrite failed: %s — using fallback", exc)
+        return _fallback()
+
+
 # ─── API callers ──────────────────────────────────────────────────────────────
 
 async def _call_seedream(
@@ -381,8 +526,8 @@ async def _poll_until_done(job_id: str, parrot_vid_id: str) -> None:
 )
 async def generate(
     prompt: str = Form(
-        ...,
-        description="Motion / scene description for the generated video",
+        "",
+        description="Motion / scene description. Optional — if omitted, Grok will analyze the reference image and generate a prompt automatically.",
     ),
     ref_video: UploadFile = File(
         None,
@@ -451,14 +596,14 @@ async def generate(
             ref_data_url = _to_jpeg_data_url(ref_bytes)
             reference_images = char_data_urls + [ref_data_url]
             sd_prompt = seedream_prompt or prompt
-            _seedream_prompt = (
-                f"[Reference Character] Use the character's face, body shape and "
-                f"appearance from images 1-{n} for identity consistency. "
-                f"[Reference Composition] Follow the exact composition, angle, "
-                f"background and lighting from image {len(reference_images)}. "
-                f"Generate: {sd_prompt}. "
-                f"Keep the character's appearance identical to images 1-{n}."
+            logger.info("job=%s  rewriting Seedream prompt via Grok (i2i)", job_id)
+            _seedream_prompt = await _rewrite_seedream_prompt(
+                ref_image_bytes=ref_bytes,
+                num_character_images=n,
+                total_ref_images=len(reference_images),
+                user_prompt=sd_prompt,
             )
+            logger.info("job=%s  rewritten prompt: %s", job_id, _seedream_prompt[:120])
             logger.info("job=%s  calling Seedream i2i %dx%d", job_id, pose_w, pose_h)
             _, generated_image_url = await _call_seedream(_seedream_prompt, reference_images, pose_w, pose_h)
             logger.info("job=%s  Seedream i2i done: %s", job_id, generated_image_url)
@@ -479,15 +624,15 @@ async def generate(
         # ── Pose image: Seedream or direct ────────────────────────────────────
         if use_seedream:
             sd_prompt = seedream_prompt or prompt
-            _seedream_prompt = (
-                f"[Reference Character] Use the character's face, body shape and "
-                f"appearance from images 1-{n} for identity consistency. "
-                f"[Reference Pose/Composition] Follow the exact pose, camera angle, "
-                f"background and lighting from image {len(reference_images)}. "
-                f"Generate: {sd_prompt}. "
-                f"Keep the character's appearance identical to images 1-{n}."
+            logger.info("job=%s  rewriting Seedream prompt via Grok (video)", job_id)
+            _seedream_prompt = await _rewrite_seedream_prompt(
+                ref_image_bytes=frame_bytes,
+                num_character_images=n,
+                total_ref_images=len(reference_images),
+                user_prompt=sd_prompt,
             )
-            logger.info("job=%s  calling Seedream %dx%d with %d refs (sd_prompt=%r)", job_id, pose_w, pose_h, len(reference_images), sd_prompt)
+            logger.info("job=%s  rewritten prompt: %s", job_id, _seedream_prompt[:120])
+            logger.info("job=%s  calling Seedream %dx%d with %d refs", job_id, pose_w, pose_h, len(reference_images))
             pose_image_bytes, _ = await _call_seedream(_seedream_prompt, reference_images, pose_w, pose_h)
             logger.info("job=%s  pose image ready (%d bytes)", job_id, len(pose_image_bytes))
         else:

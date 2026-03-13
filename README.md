@@ -6,11 +6,30 @@ Upload a reference video (or paste an Instagram/TikTok URL) + character images �
 
 ---
 
+## Prompt Rewriting (Grok Vision)
+
+When `XAI_API_KEY` is set, the API uses **Grok Vision** to analyze the reference image and generate an optimized Seedream prompt. This replaces the previous hardcoded prompt templates with AI-driven analysis of pose, clothing, lighting, background, and composition.
+
+- **With user prompt**: Grok combines the user's intent with its analysis of the reference image
+- **Without user prompt**: Grok generates a complete prompt purely from image analysis
+- **Fallback**: If `XAI_API_KEY` is missing or the API call fails, a structured template is used
+
+### Environment Variables (Railway)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `XAI_API_KEY` | Recommended | — | xAI API key for Grok Vision prompt rewriting |
+| `XAI_VISION_MODEL` | No | `grok-4-1-fast-non-reasoning` | Grok model for vision analysis |
+
+---
+
 ## Workflow
 
 **Image input (auto-detected):**
 ```
-ref image (file or Instagram image URL) + character_images + prompt
+ref image (file or Instagram image URL) + character_images + prompt (optional)
+        ↓
+Grok Vision analyzes ref image → generates optimized Seedream prompt
         ↓
 Seedream i2i: [char1, char2?, char3?, ref_image] → generated image
         ↓
@@ -19,9 +38,11 @@ Return immediately: { status: "completed", image_url: "..." }
 
 **Video input — With Seedream (default):**
 ```
-ref_video (file or video URL) + character_images + prompt
+ref_video (file or video URL) + character_images + prompt (optional)
         ↓
 Extract first frame (ffmpeg)
+        ↓
+Grok Vision analyzes first frame → generates optimized Seedream prompt
         ↓
 Seedream: [char1, char2?, char3?, first_frame] → pose-matched image
         ↓
@@ -49,13 +70,14 @@ Poll until done
 
 | Field              | Type   | Required | Description |
 |--------------------|--------|----------|-------------|
-| `prompt`           | string | ✅        | Motion / scene description |
+| `prompt`           | string | —        | Motion / scene description. Optional — if omitted, Grok analyzes the reference image and generates a prompt automatically. |
 | `character_images` | file[] | ✅        | 1–3 character identity images (JPG / PNG / WebP) |
 | `ref_video`        | file   | ※ either | Reference video **or image** file (MP4 / MOV / WebM / JPG / PNG / WebP) |
 | `ref_video_url`    | string | ※ either | Instagram (video or image post) or TikTok URL |
 | `aspect_ratio`     | string | —        | `9:16` \| `16:9` \| `1:1` (default `9:16`) |
 | `resolution`       | string | —        | `480p` \| `720p` \| `1080p` (default `1080p`, video mode only) |
 | `use_seedream`     | bool   | —        | `true` = Seedream pose generation (default). `false` = skip Seedream. Video mode only. |
+| `seedream_prompt`  | string | —        | Extra instructions for Seedream (e.g. 'wearing a red dress'). Overrides `prompt` for image generation when provided. |
 
 > `ref_video` and `ref_video_url` are mutually exclusive — provide exactly one.
 > If input is an image, the API **automatically** runs Seedream i2i only and returns `image_url` directly.
