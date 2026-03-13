@@ -408,6 +408,10 @@ async def generate(
         True,
         description="If true, run Seedream to generate a pose-matched image first. If false, use the first character_image directly as the pose image.",
     ),
+    seedream_prompt: str = Form(
+        None,
+        description="Optional extra instructions for Seedream image generation (e.g. 'wearing a red dress', 'in a forest'). If not provided, the main prompt is used.",
+    ),
 ):
     """
     **Full pipeline in one call:**
@@ -446,16 +450,17 @@ async def generate(
             logger.info("job=%s  image input detected — running Seedream i2i only", job_id)
             ref_data_url = _to_jpeg_data_url(ref_bytes)
             reference_images = char_data_urls + [ref_data_url]
-            seedream_prompt = (
+            sd_prompt = seedream_prompt or prompt
+            _seedream_prompt = (
                 f"[Reference Character] Use the character's face, body shape and "
                 f"appearance from images 1-{n} for identity consistency. "
                 f"[Reference Composition] Follow the exact composition, angle, "
                 f"background and lighting from image {len(reference_images)}. "
-                f"Generate: {prompt}. "
+                f"Generate: {sd_prompt}. "
                 f"Keep the character's appearance identical to images 1-{n}."
             )
             logger.info("job=%s  calling Seedream i2i %dx%d", job_id, pose_w, pose_h)
-            _, generated_image_url = await _call_seedream(seedream_prompt, reference_images, pose_w, pose_h)
+            _, generated_image_url = await _call_seedream(_seedream_prompt, reference_images, pose_w, pose_h)
             logger.info("job=%s  Seedream i2i done: %s", job_id, generated_image_url)
             _jobs[job_id].update(status="completed", image_url=generated_image_url)
             return {"job_id": job_id, "status": "completed", "image_url": generated_image_url}
@@ -473,16 +478,17 @@ async def generate(
 
         # ── Pose image: Seedream or direct ────────────────────────────────────
         if use_seedream:
-            seedream_prompt = (
+            sd_prompt = seedream_prompt or prompt
+            _seedream_prompt = (
                 f"[Reference Character] Use the character's face, body shape and "
                 f"appearance from images 1-{n} for identity consistency. "
                 f"[Reference Pose/Composition] Follow the exact pose, camera angle, "
                 f"background and lighting from image {len(reference_images)}. "
-                f"Generate: {prompt}. "
+                f"Generate: {sd_prompt}. "
                 f"Keep the character's appearance identical to images 1-{n}."
             )
-            logger.info("job=%s  calling Seedream %dx%d with %d refs", job_id, pose_w, pose_h, len(reference_images))
-            pose_image_bytes, _ = await _call_seedream(seedream_prompt, reference_images, pose_w, pose_h)
+            logger.info("job=%s  calling Seedream %dx%d with %d refs (sd_prompt=%r)", job_id, pose_w, pose_h, len(reference_images), sd_prompt)
+            pose_image_bytes, _ = await _call_seedream(_seedream_prompt, reference_images, pose_w, pose_h)
             logger.info("job=%s  pose image ready (%d bytes)", job_id, len(pose_image_bytes))
         else:
             pose_image_bytes = char_bytes_list[0]
